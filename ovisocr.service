@@ -1,0 +1,14 @@
+[Unit]
+Description=OvisOCR LAN web service
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/ovisocr
+ExecStart=%h/ovisocr/.venv/bin/python %h/ovisocr/app.py
+Restart=on-failure
+RestartSec=5
+Environment=OVISOCR_PORT=7860
+
+[Install]
+WantedBy=default.target
