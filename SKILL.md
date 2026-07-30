@@ -29,8 +29,8 @@ Override with `OVISOCR_URL` when the service is hosted elsewhere. The service mu
 
 1. Confirm the source image is available as a local file path.
 2. POST it as multipart field `file` to `${OVISOCR_URL:-http://wimpy:7860}/api/ocr`.
-3. Accept PNG, JPEG, or WebP only. The service limits uploads to 25 MB and serializes OCR jobs.
-4. Read JSON fields `markdown` and `elapsed_seconds`.
+3. Accept PNG, JPEG, WebP, PDF, or TIFF. The service limits uploads to 100 MB and 50 pages, and serializes OCR jobs.
+4. Read JSON fields `markdown`, `elapsed_seconds`, and `page_count`.
 5. Use the Markdown in the current task, preserving model structure unless cleanup is requested.
 6. Report OCR time when relevant.
 7. Verify uncertain handwriting, mathematical symbols, names, numbers, and punctuation against the source image. OCR output is not ground truth.
@@ -74,7 +74,7 @@ If a runtime field is false, do not claim OCR was performed. If the request retu
 
 ## Limitations
 
-- Image OCR only; PDF support is not exposed yet.
+- Supports PNG, JPEG, WebP, PDF, and single/multi-page TIFF through the same endpoint. PDFs and TIFFs are processed page by page and joined with `---`.
 - Backend is OvisOCR2 GGUF through `llama-mtmd-cli`.
 - Handwriting and mathematical notation can contain recognition errors.
 - Do not silently correct text based on expectation. Preserve the result and mark uncertain corrections.

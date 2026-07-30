@@ -1,37 +1,38 @@
 # OvisOCR LAN Service
 
-A small LAN web wrapper around OvisOCR2 GGUF and llama.cpp `llama-mtmd-cli`. It accepts PNG, JPEG, and WebP images and returns Markdown plus measured OCR runtime.
+LAN web wrapper around OvisOCR2 GGUF and llama.cpp `llama-mtmd-cli`. Accepts single images, PDFs, and multi-page TIFFs and returns Markdown.
 
 ## Requirements
 
 - Linux host; systemd user service instructions assume systemd
-- Python 3.10+
-- `uv` or Python virtualenv/pip
-- FastAPI, Uvicorn, python-multipart
+- Python 3.10+, `uv`, FastAPI, Uvicorn, python-multipart
 - llama.cpp build containing `llama-mtmd-cli` with `--model`, `--mmproj`, and `--image`
 - OvisOCR2 main GGUF plus matching `mmproj-*.gguf`
-- Enough RAM/VRAM for the model
+- `pdftoppm` and `pdfinfo` for PDF input
+- ImageMagick `magick` for TIFF input
 
-Tested pair:
+## Supported input
 
-```text
-OvisOCR2-F16.gguf
-mmproj-F16.gguf
-```
+- PNG, JPEG, WebP: single page
+- PDF: rendered at 150 DPI, up to 50 pages
+- TIFF/TIF: single or multi-page, up to 50 pages; ImageMagick renders each page
+- Upload limit: 100 MB
+
+Each page is sent independently to OvisOCR2. Results are joined with a Markdown horizontal rule (`---`). The API also returns `page_count` and total `elapsed_seconds`.
 
 ## API
 
 ```bash
-curl -X POST -F file=@document.png http://HOST:7860/api/ocr
+curl -X POST -F file=@document.pdf http://HOST:7860/api/ocr
 ```
 
 Response:
 
 ```json
-{"markdown":"...","elapsed_seconds":3.039}
+{"markdown":"page one...\n\n---\n\npage two...","elapsed_seconds":12.731,"page_count":2}
 ```
 
-`elapsed_seconds` measures the llama.cpp subprocess from launch through completion. It includes model loading, image encoding, and generation; it does not include browser upload time.
+Timing includes rendering plus all page OCR subprocesses, not browser upload time.
 
 ## Configuration
 
@@ -42,8 +43,6 @@ OVISOCR_CLI=/path/to/llama-mtmd-cli
 OVISOCR_PORT=7860
 ```
 
-The service accepts only PNG/JPEG/WebP, limits uploads to 25 MB, permits one OCR process at a time, applies a five-minute timeout, and cleans temporary files after each request. Keep it LAN-only unless authentication and a reverse proxy are added.
-
 ## Install
 
 ```bash
@@ -52,17 +51,7 @@ uv venv ~/ovisocr/.venv
 uv pip install --python ~/ovisocr/.venv/bin/python fastapi 'uvicorn[standard]' python-multipart
 ```
 
-Run manually:
-
-```bash
-~/ovisocr/.venv/bin/python ~/ovisocr/app.py
-```
-
-Health check:
-
-```bash
-curl http://127.0.0.1:7860/health
-```
+Run manually with `~/ovisocr/.venv/bin/python ~/ovisocr/app.py`. Health is `/health`.
 
 ## systemd user service
 
@@ -90,9 +79,11 @@ systemctl --user daemon-reload
 systemctl --user enable --now ovisocr.service
 ```
 
+The service serializes jobs, limits documents to 50 pages and 100 MB, applies a five-minute timeout per page, and cleans temporary files. Keep it LAN-only unless authentication and a reverse proxy are added.
+
 ## Hermes integration
 
-Hermes has no built-in OvisOCR-specific skill. A local skill can call this HTTP API, provided it can access the image path and reach Wimpy. The skill should POST the image to `/api/ocr`, consume `markdown` and `elapsed_seconds`, and tell Hermes to verify handwriting and mathematical symbols. A reusable skill should make the endpoint configurable rather than hard-code Wimpy.
+The companion Hermes skill calls `/api/ocr`, consumes `markdown`, `elapsed_seconds`, and `page_count`, and requires visual verification of uncertain handwriting, symbols, equations, names, and numbers. PDF and TIFF are now supported through the same endpoint.
 
 ## Troubleshooting
 
@@ -102,4 +93,6 @@ journalctl --user -u ovisocr.service
 curl http://127.0.0.1:7860/health
 ```
 
-The service intentionally remains separate from llama-swap because multimodal `llama-server` support has not been proven for this model.
+For PDFs, verify `pdfinfo` and `pdftoppm`. For TIFFs, verify `magick identify` and `magick`.
+
+The service remains separate from llama-swap because multimodal `llama-server` support has not been proven for this model.
