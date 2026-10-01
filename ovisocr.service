@@ -9,6 +9,11 @@ ExecStart=%h/ovisocr/.venv/bin/python %h/ovisocr/app.py
 Restart=on-failure
 RestartSec=5
 Environment=OVISOCR_PORT=7860
+Environment=OVISOCR_CLI=%h/ovisocr/llama-mtmd-cli-patched
+Environment=LLAMA_ARG_DEVICE=none
+Environment=LLAMA_ARG_N_GPU_LAYERS=0
+Environment=MTMD_BACKEND_DEVICE=none
+Environment=LLAMA_ARG_THREADS=4
 
 [Install]
 WantedBy=default.target
