@@ -8,20 +8,23 @@ CLI=os.getenv('OVISOCR_CLI',str(ROOT/'llama-mtmd-cli-patched'))
 PROMPT='Extract all readable content from this image in natural reading order. Output only the transcription as Markdown. Preserve wording, punctuation, paragraph breaks, and mathematical notation. Do not translate or paraphrase.'
 IMAGE_EXT={'.png','.jpg','.jpeg','.webp','.tif','.tiff'}; MAX_BYTES=100*1024*1024
 
-CPU_ONLY_ARGS = ['--device', 'none', '--mmproj-device', 'none', '-ngl', '0', '-t', '4']
+# Run OCR on the RTX 5060 Ti (CUDA0). NaviDC's 1.3 GiB projector
+# currently fails CUDA allocation, so keep only that projector on CPU.
+CUDA_ARGS = ['--device', 'CUDA0', '--mmproj-device', 'CUDA0', '-ngl', '99', '-t', '4']
+CUDA_MODEL_CPU_MMPROJ_ARGS = ['--device', 'CUDA0', '--mmproj-device', 'none', '-ngl', '99', '-t', '4']
 
 MODELS = {
     'ovisocr2': {
         'model': os.getenv('OVISOCR_MODEL', str(Path.home()/'.cache/llama.cpp/OvisOCR2-F16.gguf')),
         'mmproj': os.getenv('OVISOCR_MMPROJ', str(Path.home()/'.cache/llama.cpp/OvisOCR2-F16.mmproj.gguf')),
         'cli': CLI,
-        'cli_args': CPU_ONLY_ARGS.copy(),
+        'cli_args': CUDA_ARGS.copy(),
     },
     'teleocr': {
         'model': str(Path.home()/'.cache/llama.cpp/NaviDC-OCR-Q4_K_M.gguf'),
         'mmproj': str(Path.home()/'.cache/llama.cpp/NaviDC-OCR-mmproj-f16.gguf'),
         'cli': CLI,
-        'cli_args': CPU_ONLY_ARGS.copy(),
+        'cli_args': CUDA_MODEL_CPU_MMPROJ_ARGS.copy(),
     },
 }
 
@@ -45,24 +48,68 @@ def health():
         'cli': Path(CLI).exists(),
     }
 
+MAX_PAGES = 50
+
+
 def render_pages(path, suffix, td):
-    if suffix=='.pdf':
-        out=Path(td)/'page'; p=subprocess.run(['pdfinfo',str(path)],capture_output=True,text=True,timeout=20)
-        if p.returncode: raise HTTPException(400,'Invalid PDF.')
-        pages=next((int(x.split(':',1)[1]) for x in p.stdout.splitlines() if x.startswith('Pages:')),0)
-        if pages<1: raise HTTPException(400,'PDF must contain at least 1 page.')
-        q=subprocess.run(['pdftoppm','-r','150','-jpeg',str(path),str(out)],capture_output=True,text=True,timeout=120)
-        if q.returncode: raise HTTPException(400,'PDF rendering failed.')
-        return sorted(Path(td).glob('page-*.jpg'))
-    if suffix in {'.tif','.tiff'}:
-        identify=subprocess.run(['magick','identify','-format','%n',str(path)],capture_output=True,text=True,timeout=30)
-        if identify.returncode: raise HTTPException(400,'TIFF decoding failed; ImageMagick is required.')
-        out=Path(td)/'page-%04d.png'; convert=subprocess.run(['magick',str(path),'-alpha','off',str(out)],capture_output=True,text=True,timeout=120)
-        if convert.returncode: raise HTTPException(400,'TIFF page rendering failed.')
-        pages=sorted(Path(td).glob('page-*.png'))
-        if not pages: raise HTTPException(400,'TIFF must contain at least 1 page.')
+    if suffix == '.pdf':
+        out = Path(td) / 'page'
+        info = subprocess.run(['pdfinfo', str(path)], capture_output=True, text=True, timeout=20)
+        if info.returncode:
+            raise HTTPException(400, 'Invalid PDF.')
+        try:
+            page_count = next(
+                (int(line.split(':', 1)[1]) for line in info.stdout.splitlines() if line.startswith('Pages:')),
+                0,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, 'Could not determine PDF page count.') from exc
+        if page_count < 1:
+            raise HTTPException(400, 'PDF must contain at least 1 page.')
+        if page_count > MAX_PAGES:
+            raise HTTPException(413, 'Document exceeds the 50-page limit.')
+        rendered = subprocess.run(
+            ['pdftoppm', '-r', '150', '-jpeg', str(path), str(out)],
+            capture_output=True, text=True, timeout=120,
+        )
+        if rendered.returncode:
+            raise HTTPException(400, 'PDF rendering failed.')
+        pages = sorted(Path(td).glob('page-*.jpg'))
+        if len(pages) != page_count:
+            raise HTTPException(400, 'PDF rendering produced an unexpected page count.')
         return pages
-    raise HTTPException(400,'Unsupported document format.')
+    if suffix in {'.tif', '.tiff'}:
+        identify = subprocess.run(
+            ['magick', 'identify', '-format', '%n' + chr(10), str(path)],
+            capture_output=True, text=True, timeout=30,
+        )
+        if identify.returncode:
+            raise HTTPException(400, 'TIFF decoding failed; ImageMagick is required.')
+        try:
+            frame_counts = [int(line) for line in identify.stdout.splitlines() if line]
+        except ValueError as exc:
+            raise HTTPException(400, 'Could not determine TIFF page count.') from exc
+        if not frame_counts:
+            raise HTTPException(400, 'Could not determine TIFF page count.')
+        if len(set(frame_counts)) != 1 or frame_counts[0] != len(frame_counts):
+            raise HTTPException(400, 'Could not verify TIFF page count.')
+        page_count = len(frame_counts)
+        if page_count > MAX_PAGES:
+            raise HTTPException(413, 'Document exceeds the 50-page limit.')
+        if page_count < 1:
+            raise HTTPException(400, 'TIFF must contain at least 1 page.')
+        out = Path(td) / 'page-%04d.png'
+        converted = subprocess.run(
+            ['magick', str(path), '-alpha', 'off', str(out)],
+            capture_output=True, text=True, timeout=120,
+        )
+        if converted.returncode:
+            raise HTTPException(400, 'TIFF page rendering failed.')
+        pages = sorted(Path(td).glob('page-*.png'))
+        if len(pages) != page_count:
+            raise HTTPException(400, 'TIFF rendering produced an unexpected page count.')
+        return pages
+    raise HTTPException(400, 'Unsupported document format.')
 
 async def run_one(image, model_path, mmproj_path, cli_path=None, cli_args=None):
     cli = cli_path or CLI

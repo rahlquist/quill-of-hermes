@@ -8,15 +8,18 @@ LAN OCR page and API for OvisOCR2 (default) and TeleOCR, using an Ovis-local `ll
 - Python 3.10+, `uv`, FastAPI, Uvicorn, python-multipart
 - Ovis-local `llama-mtmd-cli-patched` executable with `--model`, `--mmproj`, and `--image`
 - OvisOCR2 main GGUF plus its matching OvisOCR2 mmproj; optionally NaviDC-OCR plus its matching mmproj
-- The deployed user service runs `llama-mtmd-cli-patched` CPU-only, so OCR does not contend with Llama Hugs GPU models
+- The deployed service runs the OCR model on CUDA0 (the RTX 5060 Ti); OvisOCR2 also runs its matching projector on CUDA0
+- TeleOCR (NaviDC-OCR) runs its model on CUDA0 but keeps its 1.3 GiB projector on CPU because that projector fails CUDA allocation in the current build
+- OCR uses its own `llama-mtmd-cli-patched` process, separate from Llama Hugs and llama-swap; it still consumes resources on the same physical GPU
+- The service sets `CUDA_VISIBLE_DEVICES=0` and uses four CPU threads for CPU-side work
 - `pdftoppm` and `pdfinfo` for PDF input
 - ImageMagick `magick` for TIFF input
 
 ## Supported input
 
 - PNG, JPEG, WebP: single page
-- PDF: rendered at 150 DPI, up to 50 pages
-- TIFF/TIF: single or multi-page, up to 50 pages; ImageMagick renders each page
+- PDF: page count is checked before rendering; rendered at 150 DPI, up to 50 pages
+- TIFF/TIF: page count is checked before rendering; single or multi-page up to 50 pages, rendered by ImageMagick
 - Upload limit: 100 MB
 
 Each page is sent independently to the selected OCR model (`ovisocr2` or `teleocr`). Results are joined with a Markdown horizontal rule (`---`). The API returns `markdown`, `model`, `page_count`, and total `elapsed_seconds`.
@@ -42,10 +45,8 @@ OVISOCR_MODEL=~/.cache/llama.cpp/OvisOCR2-F16.gguf
 OVISOCR_MMPROJ=~/.cache/llama.cpp/OvisOCR2-F16.mmproj.gguf
 OVISOCR_CLI=~/ovisocr/llama-mtmd-cli-patched
 OVISOCR_PORT=7860
-# CPU-only llama.cpp settings are service-local, not global:
-LLAMA_ARG_DEVICE=none
-LLAMA_ARG_N_GPU_LAYERS=0
-MTMD_BACKEND_DEVICE=none
+# The service uses CUDA0; these settings are service-local:
+CUDA_VISIBLE_DEVICES=0
 LLAMA_ARG_THREADS=4
 ```
 
@@ -76,9 +77,7 @@ Restart=on-failure
 RestartSec=5
 Environment=OVISOCR_PORT=7860
 Environment=OVISOCR_CLI=%h/ovisocr/llama-mtmd-cli-patched
-Environment=LLAMA_ARG_DEVICE=none
-Environment=LLAMA_ARG_N_GPU_LAYERS=0
-Environment=MTMD_BACKEND_DEVICE=none
+Environment=CUDA_VISIBLE_DEVICES=0
 Environment=LLAMA_ARG_THREADS=4
 
 [Install]
@@ -100,13 +99,17 @@ Run the OvisOCR unit tests with:
 python -m unittest discover -s tests -v
 ```
 
+The smoke test fixture, `tests/fixtures/ocr-smoke.png`, contains the expected text `OVIS OCR SMOKE TEST` and `ORANGE 42`.
+
+### Cross-service smoke test
+
 After deploying either OvisOCR or Llama Hugs on WIMPY, run the cross-service smoke test from `wimpy-setup`:
 
 ```bash
 python3 tools/verify_ovisocr_llama_isolation.py
 ```
 
-It submits a synthetic OCR page, confirms the page/health contract, and checks that Llama Hugs remains active with the same process identity and model inventory. It does not call a Llama Hugs model or restart either service.
+The check is read-only with respect to Llama Hugs. It submits a synthetic OCR page to both OvisOCR2 and TeleOCR, confirms both models recognize the expected text, checks CUDA0 service configuration and the model-specific projector placement, and verifies Llama Hugs remains active with the same process identity and model inventory. It does not call a Llama Hugs model, restart either service, or modify Llama Hugs.
 
 ## Hermes integration
 

@@ -1,7 +1,7 @@
 ---
 name: ovisocr
 description: Use when OCR is needed from an image via OvisOCR.
-version: 1.0.0
+version: 1.1.0
 author: Richard Ahlquist
 license: MIT
 platforms: [linux, macos, windows]
@@ -14,6 +14,10 @@ metadata:
 # OvisOCR
 
 Use the Quill of Hermes OvisOCR HTTP service for image OCR when a local image contains handwriting, printed text, tables, formulas, or document layout that should be converted to Markdown.
+
+The WIMPY deployment runs OCR inference on the RTX 5060 Ti (`CUDA0`). OvisOCR2 uses CUDA for both model and projector; TeleOCR (NaviDC-OCR) uses CUDA for its model and CPU for its large projector because the projector fails CUDA allocation in the current build. This service is separate from Llama Hugs/llama-swap, but shares the physical GPU and can contend for GPU resources. Do not describe the OCR service as CPU-only or GPU-isolated.
+
+For PDF/TIFF inputs, the server checks the rendered page count against the source count and rejects documents over 50 pages before doing full page conversion.
 
 ## Endpoint
 
@@ -47,7 +51,7 @@ curl --fail-with-body --max-time 330 \
 Response shape:
 
 ```json
-{"markdown":"...","elapsed_seconds":3.039}
+{"markdown":"...","model":"ovisocr2","elapsed_seconds":3.039,"page_count":1}
 ```
 
 Markdown-only extraction:
@@ -67,15 +71,15 @@ curl --fail --max-time 5 "$OVISOCR_URL/health"
 Expected fields:
 
 ```json
-{"ok":true,"model":true,"mmproj":true,"cli":true}
+{"ok":true,"models":{"ovisocr2":true,"teleocr":true},"cli":true}
 ```
 
-If a runtime field is false, do not claim OCR was performed. If the request returns 502, inspect `journalctl --user -u ovisocr.service` on the host.
+If `ok` is false or either selected model reports false under `models`, do not claim OCR succeeded. The health response also reports whether the executable exists under `cli`, for example: `{"ok":true,"models":{"ovisocr2":true,"teleocr":true},"cli":true}`. If a request returns 502, inspect `journalctl --user -u ovisocr.service` on the OCR host.
 
 ## Limitations
 
 - Supports PNG, JPEG, WebP, PDF, and single/multi-page TIFF through the same endpoint. PDFs and TIFFs are processed page by page and joined with `---`.
-- Backend is OvisOCR2 GGUF through `llama-mtmd-cli`.
+- Backend is an Ovis-local `llama-mtmd-cli-patched` executable with a fixed allowlist: OvisOCR2 (default) and TeleOCR (NaviDC-OCR).
 - Handwriting and mathematical notation can contain recognition errors.
 - Do not silently correct text based on expectation. Preserve the result and mark uncertain corrections.
 - Do not send secrets or unrelated files to the endpoint.

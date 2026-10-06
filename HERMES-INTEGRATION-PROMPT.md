@@ -12,7 +12,18 @@ Create a user-local Hermes skill named `ovisocr` that lets Hermes send local ima
 
 Do not rebuild the OCR model. Do not modify llama-swap. The remote OCR service owns model execution.
 
+## Current WIMPY deployment notes
+
+- OCR inference runs on the RTX 5060 Ti (`CUDA0`) via the Ovis-local `llama-mtmd-cli-patched` executable.
+- OvisOCR2 uses CUDA0 for both its model and mmproj.
+- TeleOCR (NaviDC-OCR) uses CUDA0 for its OCR model but keeps its 1.3 GiB mmproj on CPU because it fails CUDA allocation in the current build.
+- The service sets `CUDA_VISIBLE_DEVICES=0` and uses four CPU threads. Do not add CPU-only `LLAMA_ARG_DEVICE=none`, `LLAMA_ARG_N_GPU_LAYERS=0`, or `MTMD_BACKEND_DEVICE=none` overrides.
+- The OCR process is separate from Llama Hugs/llama-swap, but shares the physical GPU and therefore can contend for GPU resources. This is process separation, not GPU resource isolation.
+- After deploying on WIMPY, run `python3 ~/wimpy-setup/tools/verify_ovisocr_llama_isolation.py`. It runs the smoke fixture against both OCR models and verifies Llama Hugs remains active with unchanged process ID and model inventory.
+
 ## Service contract
+
+The service runs OCR inference on the RTX 5060 Ti (`CUDA0`) through the Ovis-local `llama-mtmd-cli-patched` executable. OvisOCR2 uses CUDA0 for both model and mmproj. TeleOCR (NaviDC-OCR) uses CUDA0 for its model, while its 1.3 GiB mmproj stays on CPU because it fails CUDA allocation in the current build. The OCR service runs in a separate process from Llama Hugs/llama-swap and shares the GPU, so it can contend for GPU resources.
 
 Default endpoint:
 
@@ -35,7 +46,7 @@ GET /health
 Expected health response:
 
 ```json
-{"ok":true,"model":true,"mmproj":true,"cli":true}
+{"ok":true,"models":{"ovisocr2":true,"teleocr":true},"cli":true}
 ```
 
 OCR endpoint:
@@ -66,6 +77,7 @@ Successful response:
 ```json
 {
   "markdown": "...",
+  "model": "ovisocr2",
   "elapsed_seconds": 12.731,
   "page_count": 2
 }
@@ -113,6 +125,8 @@ curl --fail-with-body --max-time 330 \
 ```
 
 ## Verification requirements
+
+Before concluding that the deployed OCR service is healthy, inspect `GET /health`: require `ok: true`, the selected model set to true under `models`, and `cli: true`. The health schema is `{"ok":true,"models":{"ovisocr2":true,"teleocr":true},"cli":true}`.
 
 After creating the skill:
 
